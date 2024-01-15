@@ -7,6 +7,10 @@ const init = async () => {
   await db.run(
     'CREATE TABLE Friends (id INTEGER PRIMARY KEY AUTOINCREMENT, userId int, friendId int);'
   );
+  await db.run('CREATE INDEX userId ON Friends (userId);');
+  await db.run('CREATE INDEX friendId ON Friends (friendId);');
+  await db.run('CREATE INDEX name ON Users (name);');
+
   const users = [];
   const names = ['foo', 'bar', 'baz'];
   for (i = 0; i < 27000; ++i) {
@@ -59,11 +63,24 @@ const init = async () => {
 };
 
 const search = async (req, res) => {
+  console.time('search');
   const query = req.params.query;
   const userId = parseInt(req.params.userId);
-
   db.all(
-    `SELECT id, name, id in (SELECT friendId from Friends where userId = ${userId}) as connection from Users where name LIKE '${query}%' LIMIT 20;`
+    `SELECT U.id, U.name, 
+    CASE
+        WHEN F1.friendId IS NOT NULL THEN 1 -- Direct friend
+        WHEN EXISTS (
+            SELECT 1
+            FROM Friends F2
+            WHERE F1.friendId = F2.userId AND F2.friendId != ${userId} AND F2.friendId = U.id
+        ) THEN 2 -- Friend of a friend
+        ELSE 0 -- No connection
+    END AS connection
+    FROM Users U
+    LEFT JOIN Friends F1 ON U.id = F1.friendId AND F1.userId = ${userId} -- Direct friends
+    WHERE U.name LIKE '${query}%'
+    LIMIT 20;`
   )
     .then((results) => {
       res.statusCode = 200;
@@ -76,31 +93,10 @@ const search = async (req, res) => {
       res.statusCode = 500;
       res.json({ success: false, error: err });
     });
-};
-
-const toggleFriendShip = async (userId, friendId) => {
-  // check if userId and friendId are existed in db
-  const users = await db.all(
-    `SELECT id from Users where id in (${userId}, ${friendId});`
-  );
-  if (users.length < 2) {
-    res.statusCode = 400;
-    return res.json({ success: false, error: 'Invalid userId or friendId' });
-  }
-  //
-  db.run(
-    `INSERT OR REPLACE INTO Friends (userId, friendId) VALUES (${userId}, ${friendId});`
-  )
-    .then(() => {
-      return true;
-    })
-    .catch((err) => {
-      return false;
-    });
+  console.timeEnd('search');
 };
 
 const addFriend = async (req, res) => {
-  // check if userId and friendId are existed in db
   const userId = parseInt(req.params.userId);
   const friendId = parseInt(req.params.friendId);
   const users = await db.all(
@@ -110,7 +106,6 @@ const addFriend = async (req, res) => {
     res.statusCode = 400;
     return res.json({ success: false, error: 'Invalid userId or friendId' });
   }
-  //
   db.run(
     `INSERT INTO Friends (userId, friendId) VALUES (${userId}, ${friendId});`
   )
@@ -125,7 +120,6 @@ const addFriend = async (req, res) => {
 };
 
 const removeFriend = async (req, res) => {
-  // check if userId and friendId are existed in db
   const userId = parseInt(req.params.userId);
   const friendId = parseInt(req.params.friendId);
   const users = await db.all(
@@ -135,7 +129,6 @@ const removeFriend = async (req, res) => {
     res.statusCode = 400;
     return res.json({ success: false, error: 'Invalid userId or friendId' });
   }
-  // remove friend
   db.run(
     `DELETE FROM Friends WHERE userId = ${userId} AND friendId = ${friendId};`
   )
@@ -152,7 +145,6 @@ const removeFriend = async (req, res) => {
 module.exports = {
   init,
   search,
-  toggleFriendShip,
   addFriend,
   removeFriend,
 };
