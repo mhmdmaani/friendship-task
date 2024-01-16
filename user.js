@@ -7,6 +7,7 @@ const init = async () => {
   await db.run(
     'CREATE TABLE Friends (id INTEGER PRIMARY KEY AUTOINCREMENT, userId int, friendId int);'
   );
+  // Indexes
   await db.run('CREATE INDEX userId ON Friends (userId);');
   await db.run('CREATE INDEX friendId ON Friends (friendId);');
   await db.run('CREATE INDEX name ON Users (name);');
@@ -62,25 +63,48 @@ const init = async () => {
   console.log('Ready.');
 };
 
+/**
+ * @name search
+ * @description Search users
+ * @param {*} req
+ * @param {*} res
+ * @returns {
+ * Promise<{
+ * success: boolean,
+ * users: {
+ * id: number,
+ * name: string,
+ * connection: number
+ * }[]
+ * }>}
+ * */
 const search = async (req, res) => {
   console.time('search');
   const query = req.params.query;
   const userId = parseInt(req.params.userId);
+  // validate inputs
+  if (!userId) {
+    res.statusCode = 400;
+    return res.json({ success: false, error: 'Invalid userId' });
+  }
+  if (!query) {
+    res.statusCode = 400;
+    return res.json({ success: false, error: 'Invalid query' });
+  }
   db.all(
-    `SELECT U.id, U.name, 
+    `
+  SELECT DISTINCT U.id, U.name, 
     CASE
         WHEN F1.friendId IS NOT NULL THEN 1 -- Direct friend
-        WHEN EXISTS (
-            SELECT 1
-            FROM Friends F2
-            WHERE F1.friendId = F2.userId AND F2.friendId != ${userId} AND F2.friendId = U.id
-        ) THEN 2 -- Friend of a friend
+        WHEN F2.friendId IS NOT NULL THEN 2 -- Friend of a friend (2nd connection)
         ELSE 0 -- No connection
     END AS connection
-    FROM Users U
-    LEFT JOIN Friends F1 ON U.id = F1.friendId AND F1.userId = ${userId} -- Direct friends
-    WHERE U.name LIKE '${query}%'
-    LIMIT 20;`
+  FROM Users U
+  LEFT JOIN Friends F1 ON U.id = F1.friendId AND F1.userId = ${userId} -- Direct friends
+  LEFT JOIN Friends F2 ON F1.friendId = F2.userId AND F2.friendId != ${userId} -- Friends of friends (2nd connection)
+  WHERE U.name LIKE '${query}%'
+  LIMIT 20;
+  `
   )
     .then((results) => {
       res.statusCode = 200;
@@ -96,6 +120,78 @@ const search = async (req, res) => {
   console.timeEnd('search');
 };
 
+/**
+ * @name searchWithDepth
+ * @description Search users with depth of friendship
+ * @param {*} req
+ * @param {*} res
+ * @returns {
+ * Promise<{
+ *  success: boolean,
+ *  users: {
+ *    id: number,
+ *    name: string,
+ *    connection: number
+ *  }[]
+ * }>}
+ */
+const searchWithDepth = async (req, res) => {
+  const depth = parseInt(req.params.depth);
+  const query = req.params.query;
+  const userId = parseInt(req.params.userId);
+
+  if (!depth || depth < 1 || depth > 40) {
+    res.statusCode = 400;
+    return res.json({ success: false, error: 'Invalid depth' });
+  }
+
+  let sql = `
+    SELECT DISTINCT U.id, U.name, 
+  `;
+  let caseStatement = 'CASE ';
+  for (let i = 1; i <= depth; i++) {
+    sql += ` LEFT JOIN Friends F${i} ON `;
+    if (i === 1) {
+      sql += `U.id = F1.friendId AND F1.userId = ${userId}`;
+    } else {
+      sql += `F${
+        i - 1
+      }.friendId = F${i}.userId AND F${i}.friendId != ${userId}`;
+    }
+
+    caseStatement += `WHEN F${i}.friendId IS NOT NULL THEN ${i} `;
+  }
+  caseStatement += 'ELSE 0 END AS connection';
+  sql += ` WHERE U.name LIKE '${query}%' LIMIT 20;`;
+
+  sql = sql.replace(
+    'SELECT DISTINCT U.id, U.name,',
+    `SELECT DISTINCT U.id, U.name, ${caseStatement} FROM Users U`
+  );
+  db.all(sql)
+    .then((results) => {
+      res.statusCode = 200;
+      res.json({
+        success: true,
+        users: results,
+      });
+    })
+    .catch((err) => {
+      res.statusCode = 500;
+      res.json({ success: false, error: err });
+    });
+};
+
+/**
+ * @name addFriend
+ * @description Add a friend to a user
+ * @param {*} req
+ * @param {*} res
+ * @returns  {
+ * Promise<{
+ * success: boolean
+ * }>}
+ */
 const addFriend = async (req, res) => {
   const userId = parseInt(req.params.userId);
   const friendId = parseInt(req.params.friendId);
@@ -118,6 +214,17 @@ const addFriend = async (req, res) => {
       res.json({ success: false, error: err });
     });
 };
+
+/**
+ * @name removeFriend
+ * @description Remove a friend from a user
+ * @param {*} req
+ * @param {*} res
+ * @returns  {
+ * Promise<{
+ * success: boolean
+ * }>}
+ */
 
 const removeFriend = async (req, res) => {
   const userId = parseInt(req.params.userId);
@@ -145,6 +252,7 @@ const removeFriend = async (req, res) => {
 module.exports = {
   init,
   search,
+  searchWithDepth,
   addFriend,
   removeFriend,
 };
